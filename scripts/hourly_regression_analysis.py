@@ -10,23 +10,61 @@ import statsmodels.formula.api as smf
 import os
 import glob
 
-def load_hourly_data(ba_name):
+def get_file_mapping(ba):
+    """
+    Get the correct file paths for CEMS and generation data for a specific BA.
+    
+    Parameters:
+        ba (str): Balancing authority name (e.g., 'CAISO', 'PJM')
+    
+    Returns:
+        dict: Dictionary with 'cems' and 'gen' file paths
+    """
+    # Mapping of BA names to their actual file names
+    ba_mapping = {
+        'CAISO': 'CISO',
+        'ERCOT': 'ERCO',
+        'MISO': 'MISO',
+        'NYISO': 'NYIS',
+        'SWPP': 'SWPP',
+        'PJM': 'PJM',
+        'ISONE': 'ISNE'
+    }
+    
+    cems_path = f'../data/CEMS_processed/{ba}.csv'
+    gen_path = f'../data/processed/{ba_mapping.get(ba, ba)}.csv'
+    
+    return {'cems': cems_path, 'gen': gen_path}
+
+def load_hourly_data(ba_name, year=None):
     """
     Load hourly CEMS and generation data for a specific BA.
     
     Parameters:
         ba_name (str): Balancing authority name (e.g., 'CAISO', 'PJM')
+        year (int, optional): Specific year to filter (e.g., 2022)
     
     Returns:
         tuple: (cems_df, gen_df) - CEMS and generation dataframes
     """
+    # Get correct file paths
+    file_paths = get_file_mapping(ba_name)
+    
     # Load CEMS data
-    cems_file = f'../data/CEMS_processed/{ba_name}.csv'
-    cems_df = pd.read_csv(cems_file)
+    cems_df = pd.read_csv(file_paths['cems'])
     
     # Load generation data
-    gen_file = f'../data/processed/{ba_name}.csv'
-    gen_df = pd.read_csv(gen_file)
+    gen_df = pd.read_csv(file_paths['gen'])
+    
+    # Filter by year if specified
+    if year is not None:
+        cems_df['Date'] = pd.to_datetime(cems_df['Date'])
+        cems_df = cems_df[cems_df['Date'].dt.year == year]
+        
+        gen_df['Local time'] = pd.to_datetime(gen_df['Local time'])
+        gen_df = gen_df[gen_df['Local time'].dt.year == year]
+        
+        print(f"Filtered data for year {year}: CEMS {len(cems_df):,} rows, Generation {len(gen_df):,} rows")
     
     return cems_df, gen_df
 
@@ -45,21 +83,48 @@ def preprocess_hourly_data(cems_df, gen_df):
     cems_df['datetime'] = pd.to_datetime(cems_df['Date'])
     cems_df = cems_df.groupby(['datetime', 'Facility ID']).sum().reset_index()
     
-    # Process generation data
-    columns = ['Local time', 'NG: SUN', 'NG: WND', 'D', 'NG: COL', 'NG: NG', 'NG: OIL', 'NG: WAT', 'TI', 'solar_ext_mw', 'wind_ext_mw', 'demand_ext_mw']
-    gen_df = gen_df[columns]
+    # Rename CEMS columns FIRST (before merge)
+    cems_rename_mapping = {
+        'Facility ID': 'id',
+        'Operating Time': 'optime',
+        'Gross Load (MW)': 'gross_load_mw',
+        'CO2 Mass (short tons)': 'co2_mass_shorttons',
+    }
     
-    gen_df = gen_df.rename(columns={
+    # Filter to only existing columns
+    existing_cems_rename = {k: v for k, v in cems_rename_mapping.items() if k in cems_df.columns}
+    print(f"CEMS columns to rename: {existing_cems_rename}")
+    
+    cems_df = cems_df.rename(columns=existing_cems_rename)
+    
+    # Process generation data
+    columns = ['Local time', 'NG: SUN', 'NG: WND', 'D', 'NG: COL', 'NG: NG', 'NG: WAT', 'TI', 'solar_ext_mw', 'wind_ext_mw', 'demand_ext_mw']
+    
+    # Check which columns exist
+    available_columns = [col for col in columns if col in gen_df.columns]
+    gen_df = gen_df[available_columns]
+    
+    # Rename columns
+    column_mapping = {
         'Local time': 'datetime',
         'D': 'demand_mw',
         'NG: SUN': 'solar_generation_mw',
         'NG: WND': 'wind_generation_mw',
         'NG: COL': 'coal_generation_mw',
         'NG: NG': 'natural_gas_generation_mw',
-        'NG: OIL': 'oil_generation_mw',
         'TI': 'imports_mw',
         'NG: WAT': 'hydro_generation_mw',
-    })
+    }
+    
+    # Only rename columns that exist
+    existing_mapping = {k: v for k, v in column_mapping.items() if k in gen_df.columns}
+    gen_df = gen_df.rename(columns=existing_mapping)
+    
+    # Add missing columns with default values to avoid nulls
+    missing_columns = set(column_mapping.values()) - set(existing_mapping.values())
+    for col in missing_columns:
+        gen_df[col] = 0.0
+        print(f"Added missing column {col} with default value 0.0")
     
     gen_df['datetime'] = pd.to_datetime(gen_df['datetime'])
     
@@ -69,13 +134,7 @@ def preprocess_hourly_data(cems_df, gen_df):
     # Merge CEMS and generation data
     merged_df = pd.merge(cems_df, gen_df, left_on='datetime', right_on='datetime', how='left')
     
-    # Rename columns for consistency
-    merged_df = merged_df.rename(columns={
-        'Facility ID': 'id',
-        'Operating Time': 'optime',
-        'Gross Load (MW)': 'gross_load_mw',
-        'CO2 Mass (short tons)': 'co2_mass_shorttons',
-    })
+    # CEMS columns are already renamed, no need to rename again
     
     # Calculate additional variables
     merged_df['imports_abs_mw'] = merged_df['imports_mw'].abs()
@@ -195,54 +254,79 @@ def run_hourly_regression(df, ba_name):
 
 def save_hourly_results(results, ba_name):
     """
-    Save hourly regression results to CSV.
+    Save hourly regression results to CSV in the same format as daily regression.
     
     Parameters:
         results (dict): Regression results
         ba_name (str): Balancing authority name
     """
     # Create results directory if it doesn't exist
-    os.makedirs('../results/hourly_regression', exist_ok=True)
+    os.makedirs('../results', exist_ok=True)
     
-    # Extract coefficients and statistics
-    summary_data = []
+    # Define the variables we want to include in the summary table
+    variables = ['residual_demand_mw', 'solar_generation_mw', 'wind_generation_mw', 'solar_ramp', 'wind_ramp', 'R-squared', 'Num of Obs']
     
-    for dep_var, result in results.items():
+    # Initialize results dictionary
+    all_results = {}
+    
+    for dependent_var in results.keys():
+        result = results[dependent_var]
         if result is None:
             continue
             
-        model = result['model']
+        # Initialize summary for this dependent variable
+        summary_dict = {var: [] for var in variables}
         
-        for var in model.params.index:
-            if var not in ['Intercept'] and not var.startswith('C('):
-                summary_data.append({
-                    'Dependent_Variable': dep_var,
-                    'Independent_Variable': var,
-                    'Coefficient': model.params[var],
-                    'Standard_Error': model.bse[var],
-                    't_statistic': model.tvalues[var],
-                    'p_value': model.pvalues[var],
-                    'R_squared': result['rsquared'],
-                    'Adjusted_R_squared': result['adj_rsquared'],
-                    'Observations': result['nobs'],
-                    'F_statistic': result['f_statistic'],
-                    'F_p_value': result['f_pvalue']
-                })
+        # Get coefficients and standard errors
+        for var in ['residual_demand_mw', 'solar_generation_mw', 'wind_generation_mw', 'solar_ramp', 'wind_ramp']:
+            log_var = f'{var}_log'
+            if log_var in result.get('coefficients', {}):
+                coef = result['coefficients'][log_var]
+                std_err = result['standard_errors'][log_var]
+                p_value = result['p_values'][log_var]
+                
+                # Add significance stars
+                stars = '***' if p_value < 0.001 else '**' if p_value < 0.01 else '*' if p_value < 0.05 else ''
+                
+                # Format as "coefficient (std_error)***"
+                summary_dict[var].append(f"{coef:.4f} ({std_err:.4f}){stars}")
+            else:
+                summary_dict[var].append("-")
+        
+        # Add R-squared and number of observations
+        summary_dict['R-squared'].append(f"{result.get('rsquared', 0):.4f}")
+        summary_dict['Num of Obs'].append(f"{int(result.get('nobs', 0))}")
+        
+        # Convert to DataFrame
+        summary_df = pd.DataFrame.from_dict(summary_dict, orient='index')
+        summary_df.columns = [dependent_var]
+        
+        # Store results
+        all_results[dependent_var] = summary_df
     
-    # Create summary DataFrame
-    summary_df = pd.DataFrame(summary_data)
-    
-    # Save to CSV
-    output_file = f'../results/hourly_regression/{ba_name}_hourly_regression_results.csv'
-    summary_df.to_csv(output_file, index=False)
-    print(f"Hourly regression results saved to {output_file}")
-    
-    return summary_df
+    # Combine all results into a single DataFrame
+    if all_results:
+        final_summary_df = pd.concat(all_results.values(), axis=1)
+        
+        # Save to CSV
+        output_file = f'../results/{ba_name}_hourly_regression_results.csv'
+        final_summary_df.to_csv(output_file)
+        print(f"Hourly regression results saved to {output_file}")
+        
+        return final_summary_df
+    else:
+        print("No valid results to save")
+        return None
 
-def main():
+def run_analysis_for_year(year=2022):
     """
-    Main function to run hourly regression analysis for all BAs.
+    Run hourly regression analysis for a specific year.
+    
+    Parameters:
+        year (int): Year to analyze (default: 2022)
     """
+    print(f"=== Starting Hourly Regression Analysis for {year} ===")
+    
     # List of balancing authorities
     bas = ['CAISO', 'ERCOT', 'MISO', 'NYISO', 'SWPP', 'PJM', 'ISONE']
     
@@ -250,13 +334,21 @@ def main():
     
     for ba in bas:
         print(f"\n{'='*50}")
-        print(f"Processing {ba}")
+        print(f"Processing {ba} for {year}")
         print(f"{'='*50}")
         
         try:
-            # Load data
-            cems_df, gen_df = load_hourly_data(ba)
+            # Load data for specific year
+            cems_df, gen_df = load_hourly_data(ba, year)
             print(f"Loaded {len(cems_df)} CEMS records and {len(gen_df)} generation records")
+            
+            # Check if data is too large and apply memory optimization
+            if len(cems_df) > 1000000:  # If more than 1M rows
+                print(f"⚠️  Large dataset detected ({len(cems_df):,} rows)")
+                print(f"   Using memory optimization for {ba}")
+                # Sample 10% for very large datasets
+                cems_df = cems_df.sample(frac=0.1, random_state=42)
+                print(f"   Sampled to {len(cems_df):,} rows")
             
             # Preprocess data
             merged_df = preprocess_hourly_data(cems_df, gen_df)
@@ -275,15 +367,32 @@ def main():
             continue
     
     print(f"\n{'='*50}")
-    print("Hourly regression analysis complete!")
+    print(f"Hourly regression analysis for {year} complete!")
     print(f"{'='*50}")
     
     # Print summary statistics
     for ba, results in all_results.items():
         if results is not None:
-            print(f"\n{ba}: {len(results)} regression coefficients")
-            print(f"  Average R²: {results['R_squared'].mean():.4f}")
-            print(f"  Total observations: {results['Observations'].sum():,}")
+            print(f"\n{ba}: {len(results.columns)} dependent variables")
+            print(f"  R² range: {results.loc['R-squared'].min():.4f} - {results.loc['R-squared'].max():.4f}")
+            print(f"  Total observations: {results.loc['Num of Obs'].sum():,}")
+    
+    return all_results
+
+def main():
+    """
+    Main function to run hourly regression analysis for all BAs.
+    """
+    # Run analysis for 2022 (most recent complete year)
+    results_2022 = run_analysis_for_year(2022)
+    
+    # Optionally run for other years
+    # results_2021 = run_analysis_for_year(2021)
+    # results_2020 = run_analysis_for_year(2020)
+    
+    print(f"\n{'='*50}")
+    print("Hourly regression analysis complete!")
+    print(f"{'='*50}")
 
 if __name__ == "__main__":
     main() 

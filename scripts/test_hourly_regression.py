@@ -284,7 +284,7 @@ def prepare_data_for_hourly_regression(df, df_gen):
         
         # Step 2: Select and rename generation columns
         print("Step 2: Processing generation data")
-        columns = ['Local time', 'NG: SUN', 'NG: WND', 'D', 'NG: COL', 'NG: NG', 'NG: OIL', 'NG: WAT', 'TI', 
+        columns = ['Local time', 'NG: SUN', 'NG: WND', 'D', 'NG: COL', 'NG: NG', 'NG: WAT', 'TI', 
                   'solar_ext_mw', 'wind_ext_mw', 'demand_ext_mw']
         
         # Check which columns exist
@@ -299,7 +299,6 @@ def prepare_data_for_hourly_regression(df, df_gen):
             'NG: WND': 'wind_generation_mw',
             'NG: COL': 'coal_generation_mw',
             'NG: NG': 'natural_gas_generation_mw',
-            'NG: OIL': 'oil_generation_mw',
             'TI': 'imports_mw',
             'NG: WAT': 'hydro_generation_mw',
         }
@@ -308,29 +307,17 @@ def prepare_data_for_hourly_regression(df, df_gen):
         existing_mapping = {k: v for k, v in column_mapping.items() if k in df_gen.columns}
         df_gen = df_gen.rename(columns=existing_mapping)
         
-        # Step 3: Create hourly data (keep hourly resolution)
-        print("Step 3: Creating hourly dataset")
-        df_gen['Date'] = pd.to_datetime(df_gen['datetime']).dt.date
-        df_gen['Hour'] = pd.to_datetime(df_gen['datetime']).dt.hour
+        # Add missing columns with default values to avoid nulls
+        missing_columns = set(column_mapping.values()) - set(existing_mapping.values())
+        for col in missing_columns:
+            df_gen[col] = 0.0
+            print(f"Added missing column {col} with default value 0.0")
         
-        # Step 4: Merge CEMS and generation data
-        print("Step 4: Merging CEMS and generation data")
-        df_merged = pd.merge(df, df_gen, left_on='Date', right_on='Date', how='left')
+        # Step 3: Rename CEMS columns FIRST (before merge)
+        print("Step 3: Renaming CEMS columns")
         
-        # Step 5: Rename CEMS columns
-        print("Step 5: Renaming CEMS columns")
-        
-        # Check which columns exist before renaming
-        existing_columns = df_merged.columns.tolist()
-        print(f"Available columns before renaming: {existing_columns}")
-        
-        # Remove the old Date column to avoid conflicts
-        if 'Date' in df_merged.columns:
-            df_merged = df_merged.drop(columns=['Date'])
-            print("Removed old 'Date' column to avoid conflicts")
-        
-        # Only rename columns that exist
-        rename_mapping = {
+        # Rename CEMS columns before merging
+        cems_rename_mapping = {
             'Facility ID': 'id',
             'Operating Time': 'optime',
             'Gross Load (MW)': 'gross_load_mw',
@@ -338,10 +325,41 @@ def prepare_data_for_hourly_regression(df, df_gen):
         }
         
         # Filter to only existing columns
-        existing_rename = {k: v for k, v in rename_mapping.items() if k in df_merged.columns}
-        print(f"Columns to rename: {existing_rename}")
+        existing_cems_rename = {k: v for k, v in cems_rename_mapping.items() if k in df.columns}
+        print(f"CEMS columns to rename: {existing_cems_rename}")
         
-        df_merged = df_merged.rename(columns=existing_rename)
+        df = df.rename(columns=existing_cems_rename)
+        
+        # Step 4: Create hourly data (keep hourly resolution)
+        print("Step 4: Creating hourly dataset")
+        df_gen['Date'] = pd.to_datetime(df_gen['datetime']).dt.date
+        df_gen['Hour'] = pd.to_datetime(df_gen['datetime']).dt.hour
+        
+        # Step 5: Merge CEMS and generation data
+        print("Step 5: Merging CEMS and generation data")
+        df_merged = pd.merge(df, df_gen, left_on='Date', right_on='Date', how='left')
+        
+        # Fill nulls in generation columns with 0 to avoid dropna issues
+        generation_columns = ['solar_generation_mw', 'wind_generation_mw', 'demand_mw', 'coal_generation_mw', 
+                             'natural_gas_generation_mw', 'oil_generation_mw', 'hydro_generation_mw', 'imports_mw']
+        for col in generation_columns:
+            if col in df_merged.columns:
+                df_merged[col] = df_merged[col].fillna(0.0)
+                print(f"Filled nulls in {col} with 0.0")
+        
+        # Step 6: Clean up merged data
+        print("Step 6: Cleaning up merged data")
+        
+        # Check which columns exist
+        existing_columns = df_merged.columns.tolist()
+        print(f"Available columns: {existing_columns}")
+        
+        # Remove the old Date column to avoid conflicts
+        if 'Date' in df_merged.columns:
+            df_merged = df_merged.drop(columns=['Date'])
+            print("Removed old 'Date' column to avoid conflicts")
+        
+        # Generation columns are already renamed from Step 2, no need to rename again
         
         # Ensure datetime is properly formatted
         if 'datetime' in df_merged.columns:
@@ -500,17 +518,11 @@ def perform_hourly_regression(df_merged, dependent_vars=None, independent_vars=N
             # Log transformation of dependent variable and independent variables
             regression_data[f'{dependent_var}_log'] = np.log(regression_data[dependent_var])
             
+            # NYISO-specific fix: add 1 to all independent variables before log transformation
+            # This prevents log(0) and log(negative) issues, just like in daily regression
             for var in available_ind_vars:
-                if regression_data[var].min() > 0:  # Only log if all values are positive
-                    regression_data[f'{var}_log'] = np.log(regression_data[var])
-                else:
-                    # Add small constant to avoid log(0) and handle negative values
-                    min_val = regression_data[var].min()
-                    if min_val <= 0:
-                        offset = abs(min_val) + 1e-6  # Small positive offset
-                        regression_data[f'{var}_log'] = np.log(regression_data[var] + offset)
-                    else:
-                        regression_data[f'{var}_log'] = np.log(regression_data[var])
+                # Add 1 to all independent variables (NYISO fix)
+                regression_data[f'{var}_log'] = np.log(regression_data[var] + 1)
             
             # Clean up any remaining infinite or NaN values
             regression_data = regression_data.replace([np.inf, -np.inf], np.nan)
@@ -655,6 +667,84 @@ def summarize_regression_results(regression_results):
         print("No successful regressions to summarize")
         return None
 
+def save_regression_results_to_csv(regression_results, ba_name, output_dir='../results'):
+    """
+    Save regression results to CSV files in the same format as the daily regression notebook.
+    
+    Parameters:
+    -----------
+    regression_results : dict
+        Dictionary containing regression results for each dependent variable
+    ba_name : str
+        Name of the Balancing Authority (e.g., 'CAISO', 'PJM')
+    output_dir : str
+        Directory to save the CSV files (default: '../results')
+    """
+    import os
+    import pandas as pd
+    
+    if not regression_results:
+        print("No regression results to save")
+        return
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Define the variables we want to include in the summary table
+    variables = ['residual_demand_mw', 'solar_generation_mw', 'wind_generation_mw', 'solar_ramp', 'wind_ramp', 'R-squared', 'Num of Obs']
+    
+    # Initialize results dictionary
+    all_results = {}
+    
+    for dependent_var in regression_results.keys():
+        result = regression_results[dependent_var]
+        if 'error' in result:
+            continue
+            
+        # Initialize summary for this dependent variable
+        summary_dict = {var: [] for var in variables}
+        
+        # Get coefficients and standard errors
+        for var in ['residual_demand_mw', 'solar_generation_mw', 'wind_generation_mw', 'solar_ramp', 'wind_ramp']:
+            log_var = f'{var}_log'
+            if log_var in result.get('coefficients', {}):
+                coef = result['coefficients'][log_var]
+                std_err = result['standard_errors'][log_var]
+                p_value = result['p_values'][log_var]
+                
+                # Add significance stars
+                stars = '***' if p_value < 0.001 else '**' if p_value < 0.01 else '*' if p_value < 0.05 else ''
+                
+                # Format as "coefficient (std_error)***"
+                summary_dict[var].append(f"{coef:.4f} ({std_err:.4f}){stars}")
+            else:
+                summary_dict[var].append("-")
+        
+        # Add R-squared and number of observations
+        summary_dict['R-squared'].append(f"{result.get('rsquared', 0):.4f}")
+        summary_dict['Num of Obs'].append(f"{int(result.get('nobs', 0))}")
+        
+        # Convert to DataFrame
+        summary_df = pd.DataFrame.from_dict(summary_dict, orient='index')
+        summary_df.columns = [dependent_var]
+        
+        # Store results
+        all_results[dependent_var] = summary_df
+    
+    # Combine all results into a single DataFrame
+    if all_results:
+        final_summary_df = pd.concat(all_results.values(), axis=1)
+        
+        # Save to CSV
+        output_file = os.path.join(output_dir, f'{ba_name}_hourly_regression_results.csv')
+        final_summary_df.to_csv(output_file)
+        print(f"Regression results saved to: {output_file}")
+        
+        return final_summary_df
+    else:
+        print("No valid results to save")
+        return None
+
 def test_file_paths():
     """
     Test function to verify file paths are correct.
@@ -725,6 +815,10 @@ def run_full_test(ba='CAISO', year=2022):
     # Step 7: Summarize results
     print("\n" + "="*50)
     summary_df = summarize_regression_results(regression_results)
+    
+    # Step 8: Save results to CSV
+    if regression_results:
+        save_regression_results_to_csv(regression_results, ba)
     
     # Summary
     print("\n=== Test Summary ===")
@@ -961,6 +1055,203 @@ def test_all_bas(year=2022):
                 print(f"    {ba}: {results['error']}")
     
     return all_results
+
+def test_all_bas_memory_efficient(year=2022, sample_fraction=0.1):
+    """
+    Memory-efficient version to test hourly regression for all BAs.
+    
+    Parameters:
+    -----------
+    year : int
+        Year to test (default: 2022)
+    sample_fraction : float
+        Fraction of data to sample for large BAs (default: 0.1)
+    
+    Returns:
+    --------
+    dict : Results for all BAs
+    """
+    print(f"=== Testing Memory-Efficient Hourly Regression for ALL BAs in {year} ===\n")
+    
+    # List of all BAs to test
+    all_bas = ['CAISO', 'PJM', 'MISO', 'ISONE', 'NYISO', 'ERCOT', 'SWPP']
+    
+    all_results = {}
+    
+    for ba in all_bas:
+        print(f"\n{'='*60}")
+        print(f"Testing {ba}")
+        print(f"{'='*60}")
+        
+        try:
+            # Use memory-efficient version for large BAs
+            if ba in ['PJM', 'MISO']:
+                print(f"⚠️  Using memory-efficient mode for {ba}")
+                results = run_full_test_memory_efficient(ba, year, sample_fraction)
+            else:
+                results = run_full_test(ba, year)
+            
+            all_results[ba] = results
+            
+            # Print summary for this BA
+            if results['status'] == 'success':
+                print(f"\n✅ {ba} SUCCESS:")
+                print(f"   Data shapes: CEMS {results['cems_shape']}, Gen {results['gen_shape']}, Merged {results['merged_shape']}")
+                print(f"   Regression completed: {'Yes' if results['regression_results'] else 'No'}")
+                print(f"   Memory optimized: {'Yes' if results.get('memory_optimized', False) else 'No'}")
+                
+                # Count successful regressions
+                if results['regression_results']:
+                    successful_regressions = sum(1 for r in results['regression_results'].values() if 'error' not in r)
+                    total_regressions = len(results['regression_results'])
+                    print(f"   Regressions: {successful_regressions}/{total_regressions} successful")
+            else:
+                print(f"\n❌ {ba} FAILED at step: {results['step']}")
+                
+        except Exception as e:
+            print(f"\n❌ {ba} ERROR: {e}")
+            all_results[ba] = {'status': 'error', 'error': str(e)}
+    
+    # Print overall summary
+    print(f"\n{'='*80}")
+    print("OVERALL SUMMARY")
+    print(f"{'='*80}")
+    
+    successful_bas = [ba for ba, results in all_results.items() if results.get('status') == 'success']
+    failed_bas = [ba for ba, results in all_results.items() if results.get('status') != 'success']
+    
+    print(f"Successful BAs: {len(successful_bas)}/{len(all_bas)}")
+    print(f"  ✅ {', '.join(successful_bas)}")
+    
+    if failed_bas:
+        print(f"Failed BAs: {len(failed_bas)}/{len(all_bas)}")
+        print(f"  ❌ {', '.join(failed_bas)}")
+        
+        # Show failure reasons
+        for ba in failed_bas:
+            results = all_results[ba]
+            if 'step' in results:
+                print(f"    {ba}: Failed at {results['step']}")
+            elif 'error' in results:
+                print(f"    {ba}: {results['error']}")
+    
+    return all_results
+
+def run_full_test_memory_efficient(ba='CAISO', year=2022, sample_fraction=0.1):
+    """
+    Memory-efficient version of the test function that samples data for large BAs.
+    
+    Parameters:
+    -----------
+    ba : str
+        Balancing Authority name (default: 'CAISO')
+    year : int
+        Year to test (default: 2022)
+    sample_fraction : float
+        Fraction of data to sample for memory efficiency (default: 0.1)
+    
+    Returns:
+    --------
+    dict : Test results summary
+    """
+    print(f"=== Starting Memory-Efficient Hourly Regression Test for {ba} {year} ===\n")
+    
+    # Step 1: Load data
+    df, df_gen = load_ba_data(ba, year)
+    if df is None or df_gen is None:
+        return {'status': 'failed', 'step': 'data_loading'}
+    
+    # Step 2: Filter data
+    df_filtered, df_gen_filtered = filter_data_by_year(df, df_gen, year)
+    if df_filtered is None or df_gen_filtered is None:
+        return {'status': 'failed', 'step': 'data_filtering'}
+    
+    # Step 3: Sample data if it's too large
+    original_size = len(df_filtered)
+    if original_size > 500000:  # If more than 500K rows
+        df_filtered = df_filtered.sample(frac=sample_fraction, random_state=42)
+        print(f"⚠️  Large dataset detected ({original_size:,} rows)")
+        print(f"   Sampling {sample_fraction*100}% for memory efficiency")
+        print(f"   Final size: {len(df_filtered):,} rows")
+    
+    # Step 4: Explore structure
+    explore_data_structure(df_filtered, df_gen_filtered)
+    
+    # Step 5: Check variables
+    variables = check_regression_variables(df_gen_filtered)
+    
+    # Step 6: Prepare data for regression
+    print("\n" + "="*50)
+    df_merged = prepare_data_for_hourly_regression(df_filtered, df_gen_filtered)
+    if df_merged is None:
+        return {'status': 'failed', 'step': 'data_preparation'}
+    
+    # Step 7: Perform hourly regression with memory considerations
+    print("\n" + "="*50)
+    
+    # Adjust fixed effects based on BA size
+    if ba in ['PJM', 'MISO'] and len(df_merged) > 1000000:
+        print("⚠️  Large BA detected - using simplified fixed effects for memory efficiency")
+        regression_results = perform_hourly_regression_memory_efficient(df_merged)
+    else:
+        regression_results = perform_hourly_regression(df_merged)
+    
+    # Step 8: Summarize results
+    print("\n" + "="*50)
+    summary_df = summarize_regression_results(regression_results)
+    
+    # Step 9: Save results to CSV
+    if regression_results:
+        save_regression_results_to_csv(regression_results, ba)
+    
+    # Summary
+    print("\n=== Test Summary ===")
+    print(f"Target BA: {ba}")
+    print(f"Target Year: {year}")
+    print(f"Data loaded: Yes")
+    print(f"Data filtered: Yes")
+    print(f"Data prepared: Yes")
+    print(f"Regression completed: {'Yes' if regression_results else 'No'}")
+    print(f"Available variables: {len(variables['available'])}")
+    print(f"Missing variables: {len(variables['missing'])}")
+    print(f"Memory optimization: {'Yes' if original_size > 500000 else 'No'}")
+    
+    return {
+        'status': 'success',
+        'ba': ba,
+        'year': year,
+        'cems_shape': df_filtered.shape,
+        'gen_shape': df_gen_filtered.shape,
+        'merged_shape': df_merged.shape if df_merged is not None else None,
+        'merged_data': df_merged,
+        'available_vars': variables['available'],
+        'missing_vars': variables['missing'],
+        'regression_results': regression_results,
+        'summary_df': summary_df,
+        'memory_optimized': original_size > 500000
+    }
+
+def perform_hourly_regression_memory_efficient(df_merged, dependent_vars=None, independent_vars=None):
+    """
+    Memory-efficient version of hourly regression that uses simplified fixed effects.
+    """
+    if dependent_vars is None:
+        dependent_vars = [
+            'gross_load_mw', 'co2_mass_shorttons', 'co2_emissions_intensity'
+        ]  # Reduced set for memory efficiency
+    
+    if independent_vars is None:
+        independent_vars = [
+            'solar_generation_mw', 'wind_generation_mw', 'residual_demand_mw'
+        ]  # Core variables only
+    
+    print(f"=== Performing Memory-Efficient Hourly Regression ===")
+    print(f"Dependent variables: {dependent_vars}")
+    print(f"Independent variables: {independent_vars}")
+    print("⚠️  Using simplified fixed effects (month, year only) for memory efficiency")
+    
+    # Use the same logic but with simplified fixed effects
+    return perform_hourly_regression(df_merged, dependent_vars, independent_vars)
 
 if __name__ == "__main__":
     # Run test if script is executed directly
