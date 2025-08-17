@@ -82,13 +82,27 @@ def preprocess_hourly_data(cems_df, gen_df):
     # Process CEMS data
     cems_df['datetime'] = pd.to_datetime(cems_df['Date'])
     
+    # Debug: Check Facility ID column structure
+    print(f"Facility ID column type: {cems_df['Facility ID'].dtype}")
+    print(f"Facility ID unique values (first 5): {cems_df['Facility ID'].unique()[:5]}")
+    print(f"Facility ID shape: {cems_df['Facility ID'].shape}")
+    
+    # Ensure Facility ID is 1-dimensional
+    if cems_df['Facility ID'].ndim > 1:
+        print("⚠️  Facility ID is multi-dimensional, flattening...")
+        cems_df['Facility ID'] = cems_df['Facility ID'].iloc[:, 0] if cems_df['Facility ID'].ndim == 2 else cems_df['Facility ID'].iloc[0]
+    
     # Select only numeric columns for summing (exclude datetime and string columns)
     numeric_columns = cems_df.select_dtypes(include=[np.number]).columns.tolist()
     # Also include the datetime and Facility ID columns for grouping
     group_columns = ['datetime', 'Facility ID']
     columns_to_sum = group_columns + numeric_columns
     
-    cems_df = cems_df[columns_to_sum].groupby(group_columns).sum().reset_index()
+    # Ensure all columns exist
+    available_columns = [col for col in columns_to_sum if col in cems_df.columns]
+    print(f"Columns available for grouping: {available_columns}")
+    
+    cems_df = cems_df[available_columns].groupby(group_columns).sum().reset_index()
     
     # Rename CEMS columns FIRST (before merge)
     cems_rename_mapping = {
