@@ -332,11 +332,11 @@ def save_hourly_results(results, ba_name):
             
             # Get coefficients for independent variables
             for var in ['residual_demand_mw', 'solar_generation_mw', 'wind_generation_mw', 'solar_ramp', 'wind_ramp']:
-                log_var = f'{var}_log'
-                if log_var in params.index:
-                    coef = params[log_var]
-                    std_err = std_errors[log_var]
-                    p_value = p_values[log_var]
+                # Variables are already log-transformed, so no _log suffix needed
+                if var in params.index:
+                    coef = params[var]
+                    std_err = std_errors[var]
+                    p_value = p_values[var]
                     
                     # Add significance stars
                     stars = '***' if p_value < 0.001 else '**' if p_value < 0.01 else '*' if p_value < 0.05 else ''
