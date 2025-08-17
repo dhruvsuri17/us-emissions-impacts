@@ -31,8 +31,8 @@ def get_file_mapping(ba):
         'ISONE': 'ISNE'
     }
     
-    cems_path = f'../data/CEMS_processed/{ba}.csv'
-    gen_path = f'../data/processed/{ba_mapping.get(ba, ba)}.csv'
+    cems_path = f'data/CEMS_processed/{ba}.csv'
+    gen_path = f'data/processed/{ba_mapping.get(ba, ba)}.csv'
     
     return {'cems': cems_path, 'gen': gen_path}
 
@@ -261,7 +261,7 @@ def save_hourly_results(results, ba_name):
         ba_name (str): Balancing authority name
     """
     # Create results directory if it doesn't exist
-    os.makedirs('../results', exist_ok=True)
+    os.makedirs('results', exist_ok=True)
     
     # Define the variables we want to include in the summary table
     variables = ['residual_demand_mw', 'solar_generation_mw', 'wind_generation_mw', 'solar_ramp', 'wind_ramp', 'R-squared', 'Num of Obs']
@@ -309,7 +309,7 @@ def save_hourly_results(results, ba_name):
         final_summary_df = pd.concat(all_results.values(), axis=1)
         
         # Save to CSV
-        output_file = f'../results/{ba_name}_hourly_regression_results.csv'
+        output_file = f'results/{ba_name}_hourly_regression_results.csv'
         final_summary_df.to_csv(output_file)
         print(f"Hourly regression results saved to {output_file}")
         
