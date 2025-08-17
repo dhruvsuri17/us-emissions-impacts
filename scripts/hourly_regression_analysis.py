@@ -87,9 +87,19 @@ def preprocess_hourly_data(cems_df, gen_df):
     print(f"Facility ID unique values (first 5): {cems_df['Facility ID'].unique()[:5]}")
     print(f"Facility ID shape: {cems_df['Facility ID'].shape}")
     
-    # Ensure Facility ID is 1-dimensional
+    # Ensure Facility ID is 1-dimensional and handle any pandas version issues
     if cems_df['Facility ID'].ndim > 1:
         print("⚠️  Facility ID is multi-dimensional, flattening...")
+        cems_df['Facility ID'] = cems_df['Facility ID'].iloc[:, 0] if cems_df['Facility ID'].ndim == 2 else cems_df['Facility ID'].iloc[0]
+    
+    # Additional safety: ensure Facility ID is a simple Series
+    if not isinstance(cems_df['Facility ID'], pd.Series):
+        print("⚠️  Facility ID is not a Series, converting...")
+        cems_df['Facility ID'] = pd.Series(cems_df['Facility ID'].values.flatten())
+    
+    # Final check: ensure it's 1D
+    if cems_df['Facility ID'].ndim != 1:
+        print("❌ Facility ID still not 1D after conversion, using first column")
         cems_df['Facility ID'] = cems_df['Facility ID'].iloc[:, 0] if cems_df['Facility ID'].ndim == 2 else cems_df['Facility ID'].iloc[0]
     
     # Select only numeric columns for summing (exclude datetime and string columns)
