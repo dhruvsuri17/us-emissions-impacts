@@ -322,20 +322,32 @@ def save_hourly_results(results, ba_name):
         # Initialize summary for this dependent variable
         summary_dict = {var: [] for var in variables}
         
-        # Get coefficients and standard errors
-        for var in ['residual_demand_mw', 'solar_generation_mw', 'wind_generation_mw', 'solar_ramp', 'wind_ramp']:
-            log_var = f'{var}_log'
-            if log_var in result.get('coefficients', {}):
-                coef = result['coefficients'][log_var]
-                std_err = result['standard_errors'][log_var]
-                p_value = result['p_values'][log_var]
-                
-                # Add significance stars
-                stars = '***' if p_value < 0.001 else '**' if p_value < 0.01 else '*' if p_value < 0.05 else ''
-                
-                # Format as "coefficient (std_error)***"
-                summary_dict[var].append(f"{coef:.4f} ({std_err:.4f}){stars}")
-            else:
+        # Get coefficients and standard errors from the statsmodels model
+        model = result.get('model')
+        if model is not None:
+            # Extract coefficients, standard errors, and p-values
+            params = model.params
+            std_errors = model.bse
+            p_values = model.pvalues
+            
+            # Get coefficients for independent variables
+            for var in ['residual_demand_mw', 'solar_generation_mw', 'wind_generation_mw', 'solar_ramp', 'wind_ramp']:
+                log_var = f'{var}_log'
+                if log_var in params.index:
+                    coef = params[log_var]
+                    std_err = std_errors[log_var]
+                    p_value = p_values[log_var]
+                    
+                    # Add significance stars
+                    stars = '***' if p_value < 0.001 else '**' if p_value < 0.01 else '*' if p_value < 0.05 else ''
+                    
+                    # Format as "coefficient (std_error)***"
+                    summary_dict[var].append(f"{coef:.4f} ({std_err:.4f}){stars}")
+                else:
+                    summary_dict[var].append("-")
+        else:
+            # If no model, fill with dashes
+            for var in ['residual_demand_mw', 'solar_generation_mw', 'wind_generation_mw', 'solar_ramp', 'wind_ramp']:
                 summary_dict[var].append("-")
         
         # Add R-squared and number of observations
