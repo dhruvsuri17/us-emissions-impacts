@@ -120,8 +120,10 @@ def preprocess_hourly_data(cems_df, gen_df):
     group_columns = ['datetime', 'Facility ID']
     columns_to_sum = group_columns + numeric_columns
     
-    # Ensure all columns exist
+    # Ensure all columns exist and remove duplicates
     available_columns = [col for col in columns_to_sum if col in cems_df.columns]
+    # Remove duplicate columns (this was causing the groupby error)
+    available_columns = list(dict.fromkeys(available_columns))  # Preserves order while removing duplicates
     print(f"Columns available for grouping: {available_columns}")
     
     cems_df = cems_df[available_columns].groupby(group_columns).sum().reset_index()
