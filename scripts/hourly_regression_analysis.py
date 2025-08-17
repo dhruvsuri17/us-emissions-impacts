@@ -102,6 +102,18 @@ def preprocess_hourly_data(cems_df, gen_df):
         print("❌ Facility ID still not 1D after conversion, using first column")
         cems_df['Facility ID'] = cems_df['Facility ID'].iloc[:, 0] if cems_df['Facility ID'].ndim == 2 else cems_df['Facility ID'].iloc[0]
     
+    # Nuclear option: completely reconstruct the Facility ID column
+    print("🔧 Reconstructing Facility ID column to ensure compatibility...")
+    facility_values = cems_df['Facility ID'].values
+    if hasattr(facility_values, 'flatten'):
+        facility_values = facility_values.flatten()
+    
+    # Create a completely new Series
+    cems_df = cems_df.drop(columns=['Facility ID'])
+    cems_df['Facility ID'] = pd.Series(facility_values, index=cems_df.index)
+    
+    print(f"✅ Facility ID reconstructed. New type: {type(cems_df['Facility ID'])}, shape: {cems_df['Facility ID'].shape}, ndim: {cems_df['Facility ID'].ndim}")
+    
     # Select only numeric columns for summing (exclude datetime and string columns)
     numeric_columns = cems_df.select_dtypes(include=[np.number]).columns.tolist()
     # Also include the datetime and Facility ID columns for grouping
