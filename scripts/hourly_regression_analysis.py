@@ -81,7 +81,14 @@ def preprocess_hourly_data(cems_df, gen_df):
     """
     # Process CEMS data
     cems_df['datetime'] = pd.to_datetime(cems_df['Date'])
-    cems_df = cems_df.groupby(['datetime', 'Facility ID']).sum().reset_index()
+    
+    # Select only numeric columns for summing (exclude datetime and string columns)
+    numeric_columns = cems_df.select_dtypes(include=[np.number]).columns.tolist()
+    # Also include the datetime and Facility ID columns for grouping
+    group_columns = ['datetime', 'Facility ID']
+    columns_to_sum = group_columns + numeric_columns
+    
+    cems_df = cems_df[columns_to_sum].groupby(group_columns).sum().reset_index()
     
     # Rename CEMS columns FIRST (before merge)
     cems_rename_mapping = {
